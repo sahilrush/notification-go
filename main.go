@@ -1,11 +1,12 @@
 package main
 
 import (
-	"strconv"
-	"time"
+	"log"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/streadway/amqp"
 )
 
 var upgrader = websocket.Upgrader{
@@ -14,20 +15,39 @@ var upgrader = websocket.Upgrader{
 }
 
 func main() {
-	r := gin.Default()
-	r.GET("/ws", func(c *gin.Context) {
-		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := amqp.Dial(os.Getenv("AMQP_URL"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ch.Close()
+	msgs, err := ch.Consume(
+		"notification_queue",
+		"",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	router := gin.Default()
+	router.GET("/ws", func(c *gin.Context) {
+		ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
+			log.Print("upgrade:", err)
 			return
 		}
-		defer conn.Close()
-		i := 0
-		for {
-			i++
-			conn.WriteMessage(websocket.TextMessage, []byte("New message (#"+strconv.Itoa(i)+")"))
-			time.Sleep(time.Second)
+		defer ws.Close()
+		for msg := range msgs {
+			ws.WriteMessage(websocket.TextMessage, msg.Body)
 		}
-
 	})
-	r.Run("8080")
+	router.Run(":8080")
 }
